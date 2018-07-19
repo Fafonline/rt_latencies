@@ -1,0 +1,16 @@
+#!/bin/bash
+
+while true; \
+do \
+    cat /proc/interrupts; \
+    ps w; \
+    echo Creating file...; \
+    dd if=/dev/zero of=foo bs=1M count=50; \
+    sync; \
+    echo Removing file...; \
+    rm -f foo;\
+    sync; \
+    ls -lRU /; \
+    done; \ 
+
+#stress -v --hdd 10  --cpu 10 --vm 10 --vm-bytes 256M  --io 10

@@ -1,0 +1,2 @@
+#!/bin/bash
+stress --vm 40 --vm-bytes 256M

@@ -1,0 +1,429 @@
+#!/bin/bash
+
+#1. Redirect the output of cyclictest to a file, for example
+
+
+
+
+function GetStressTestPid()
+{
+    ps -x | grep $1 | \
+            grep -v grep | \
+            grep -v taskset | \
+            awk '{print $1}'
+}
+
+
+
+function StartStressTest()
+{
+  STRESS_TEST=$1
+  CPU=$2
+  PRIORITY=$3
+  gnome-terminal --title="$STRESS_TEST" -x sh -c "taskset -c $CPU $STRESS_TEST;bash" 
+  PID=`GetStressTestPid $STRESS_TEST` 
+  sudo chrt -f -p $PRIORITY $PID
+
+  echo $PID
+}
+
+
+function gpid()
+{
+  ps -x | grep $1 | grep -v grep | awk '{print "kill -9 " $1}'
+}
+
+
+function StopStressTest()
+{
+   gpid stress_ | bash
+}
+
+function CreateDateHash()
+{
+DATE=`date "+%Y-%m-%d_%H:%M:%S"`
+HASH=`cat /dev/random | LC_CTYPE=C tr -dc "[:alpha:]" | head -c 8`
+echo ${DATE}_$HASH
+}
+
+function Display()
+{
+
+#3. Grep data lines, remove empty lines and create a common field separator
+HASH_DATE=$1
+DIRECTORY=$HASH_DATE
+
+CYCLICTEST_OUTPUT=$DIRECTORY/output_$HASH_DATE
+
+echo -e "Display test result for $HASH_DATE:\n
+- File: $CYCLICTEST_OUTPUT
+"
+
+grep -v -e "^#" -e "^$" $CYCLICTEST_OUTPUT | tr " " "\t" >$DIRECTORY/histogram 
+
+#4. Set the number of cores, for example
+
+
+#(If the script is used on a variety of systems with a different number of cores, this can, of course, be determined from the system.)
+
+#5. Create two-column data sets with latency classes and frequency values for each core
+
+for i in `seq 1 $cores`
+do
+  column=`expr $i + 1`
+  cut -f1,$column $DIRECTORY/histogram >$DIRECTORY/histogram$i
+done
+
+#6. Create plot command header
+
+echo -n -e "set title \"Latency plot\"\n\
+set terminal png\n\
+set xlabel \"Latencies (us) - max=$max (core $maxi)\"\n\
+set logscale y\n\
+set xrange [0:$CYCLIC_DISPLAY_RANGE]\n\
+set yrange [0.8:*]\n\
+set ylabel \"Number of latency samples\"\n\
+set output \"$DIRECTORY/plot.png\"\n\
+plot " > $DIRECTORY/plotcmd
+
+#7. Append plot command data references
+
+for i in `seq 1 $cores`
+do
+  if test $i != 1
+  then
+    echo -n ", " >>$DIRECTORY/plotcmd
+  fi
+  cpuno=`expr $i - 1`
+  if test $cpuno -lt 10
+  then
+    title=" CPU$cpuno - Mean value: ${avg_array[$cpuno]} us - max value: ${max_array[$cpuno]} us"
+   else
+    title="CPU$cpuno"
+  fi
+  echo -n "\"$DIRECTORY/histogram$i\" using 1:2 title \"$title\" with histeps" >> $DIRECTORY/plotcmd
+done
+
+#8. Execute plot command
+
+gnuplot -persist < $DIRECTORY/plotcmd
+
+#9. Enjoy
+
+firefox $DIRECTORY/plot.png
+}
+
+function Progress()
+{
+  echo "In Progress..."
+  PID=$1
+
+while [ true ];
+do
+  if [ $SECONDS -gt "5" ]
+  then
+    TIME_FORMAT=`date -d@$SECONDS -u +%H:%M:%S`
+    echo -en "Elapsed time = $TIME_FORMAT\r"
+  fi
+  
+  sleep 1
+  output=`ps -p "$PID"`
+  
+  if [ $? = 1 ];
+  then
+        echo "...done"
+        break
+  fi
+done
+}
+
+STRESS_TEST_LOG=""
+function StressTestAppend()
+{
+  STRESS_TEST_STRING=$1
+  STRESS_TEST_ARG_CPU=$2
+  STRESS_TEST_ARG_PRIORITY=$3
+  
+  STRESS_TEST_LOG+="# - $STRESS_TEST_STRING - CPU:$STRESS_TEST_ARG_CPU / Priority:$STRESS_TEST_ARG_PRIORITY\n"
+}
+
+StressTestPrint()
+{
+  echo $STRESS_TEST_LOG
+}
+
+function Usage()
+{
+echo "cmdOption=\"$cmdOption\". \"\" needed"
+echo "-$doHellOption: dohell stress test"
+echo "-$cpuBurnerOption: cpu burner stress test"
+echo "-$memAllocOption: memory allocation stress test"
+echo "-$graphicOption: display graphics after running test"
+echo "-$fileOption: Only display existing results"
+echo "help=-h"
+}
+
+
+function PrintHeader()
+{
+   cat $OUTPUT_FILE | sed -n "/<HEADER>/,/<\/HEADER>/p"  | sed "s/<HEADER>//" | sed "s/<\/HEADER>//"
+}
+
+
+cmdOption="c"
+cmdFlag=0
+
+doHellOption="d"
+doHellFlag=0
+doHellPar=0
+dohellScript="stressTest_dohell"
+
+cpuBurnerOption="b"
+cpuBurnerFlag=0
+cpuBurnerPar=0
+cpuBurnerScript="stressTest_cpuburner"
+
+memAllocOption="m"
+memAllocFlag=0
+memAllocar=0
+memAllocScript="stressTest_memalloc"
+
+nanoclockOption="n"
+
+clearOption="x"
+clearFlag=0
+
+graphicOption="g"
+fileOption="f"
+
+verboseOption="v"
+verboseFlag=0
+
+TEST_HASH=`CreateDateHash`
+
+
+fileArg="output_"$TEST_HASH
+
+intervalOption="i"
+intervalArg=200
+
+loopOption="l"
+loopArg=50000
+
+displayFlag=0
+
+executeFlag=1
+
+opstring="$cmdOption:$doHellOption:$cpuBurnerOption:$memAllocOption:$clearOption$graphicOption$fileOption:$intervalOption:$loopOption:$nanoclockOption$verboseOption"
+status=0
+coreUT=0
+
+dummyFlag=0
+
+while [ $status = 0 ]
+do
+  getopts $opstring name
+  status=$?
+  case  $name in
+  $cmdOption)cmdFlag=1;CMD=$OPTARG;;
+  $doHellOption)doHellFlag=1;doHellPar=$OPTARG;;
+  $cpuBurnerOption)cpuBurnerFlag=1;cpuBurnerPar=$OPTARG;;
+  $memAllocOption)memAllocFlag=1;echo "Mem alloc param: $OPTARG";memAllocPar=$OPTARG;;
+  $graphicOption)displayFlag=1;echo "Display Graph for ouput file $fileArg";;
+  $fileOption)displayFlag=1;executeFlag=0;fileArg=$OPTARG;echo "Option -$name: Display results for test'$fileArg'";;
+  $intervalOption)dummyFlag=0;intervalArg=$OPTARG;echo "Option -$name: Interval = $intervalArg us";;
+  $loopOption)loopArg=$OPTARG;echo "Option -$name: Number of loop = $loopArg";;
+  $nanoclockOption)nanoclockArg="-n";echo "Option -$name: Use nanoclock option $nanoclockArg";;
+  $verboseOption)verboseFlag=1;echo "Option -$name: Verbose info display";;
+  $clearOption)clearFlag=1;;
+  "-h")Usage;;
+  *);;
+  esac
+done
+
+STRESS_TEST_PIDS=""
+
+if [ $clearFlag = 1 ]
+then
+  echo "clear all trailing process"
+  StopStressTestAll
+  exit
+fi
+
+STRESS_TEST_PARAM="[CPUID/RT Priority]"
+
+
+#Cyclic test param
+
+CYCLIC_LOOP=$loopArg 
+CYCLIC_DISPLAY_RANGE=1000
+CYCLIC_INTERVAL=$intervalArg
+
+let "TIME_SECOND=$CYCLIC_LOOP*$CYCLIC_INTERVAL/1000000"
+
+
+
+CYCLIC_CLOCK=$nanoclockArg
+
+if [ $cmdFlag = 0 ]
+then
+  CMD="-l$CYCLIC_LOOP -m -Sp90 -i$CYCLIC_INTERVAL $CYCLIC_CLOCK -h$CYCLIC_DISPLAY_RANGE -q"
+fi
+
+if  [ $doHellFlag = 1 ]
+then
+  echo "Dohell enabled - Param $STRESS_TEST_PARAM:$doHellPar"
+  STRESS_TEST_PIDS+=`StartStressTest "stress_dohell" $doHellPar`
+  StressTestAppend "stress_dohell" $doHellPar
+
+fi
+
+if [ $cpuBurnerFlag = 1 ]
+then
+  echo "CPU burner enabled - Param $STRESS_TEST_PARAM:$cpuBurnerPar"
+  STRESS_TEST_PIDS+=" "`StartStressTest "stress_cpuburner" $cpuBurnerPar`
+  StressTestAppend "stress_cpuburner" $cpuBurnerPar
+fi
+
+if [ $memAllocFlag = 1 ]
+then
+  echo "Memory allocation enabled - Param $STRESS_TEST_PARAM:$memAllocPar"
+  STRESS_TEST_PIDS+=" "`StartStressTest "stress_memalloc" $memAllocPar`
+  StressTestAppend "stress_memalloc" $memAllocPar
+fi
+
+if [ -n "$STRESS_TEST_PIDS" ]
+then
+echo "StressTest PID:$STRESS_TEST_PIDS"
+fi
+
+
+if [ $executeFlag = 1 ];
+then
+echo "Cyclictest-options: $CMD"
+TIME_FORMAT=`date -d@$TIME_SECOND -u +%H:%M:%S`
+echo "- Number of loop:$CYCLIC_LOOP"
+echo "- Loop interval (us):$CYCLIC_INTERVAL"
+echo "- Output file=$fileArg"
+echo "- Estimated process time (Hour/Minute/Second):$TIME_FORMAT"
+
+
+
+
+#================================== <CYCLIC TEST> =========================================
+
+mkdir -p $TEST_HASH
+OUTPUT_FILE=$TEST_HASH/$fileArg
+
+BEGIN_DATE=`date`
+
+sudo cyclictest $CMD > $OUTPUT_FILE &
+
+
+
+#================================== <CYCLIC TEST> =========================================
+CYCLIC_PID=$!
+Progress $CYCLIC_PID
+StopStressTest
+END_DATE=`date`
+
+stressTest=`StressTestPrint`
+
+HEADER="#<HEADER>=============================================================\n\
+#\n\
+# Test Directory:$TEST_HASH\n\
+#\n\
+# Estimated process time:$TIME_FORMAT\n\
+# Beginning Date: $BEGIN_DATE\n\
+# Ending Date: $END_DATE\n\
+#\n\
+# Command: $CMD\n\
+# Stress test:\n$stressTest\
+#\n\
+@CPU_RESULTS@\n\
+#\n\
+# ====================================================================</HEADER>\n\n"
+ sed -i "1s;^;$HEADER;" $OUTPUT_FILE
+else
+  TEST_HASH=$fileArg
+  OUTPUT_FILE=$TEST_HASH/output_$TEST_HASH
+fi
+
+
+cores=`grep "# Nb Thread"  $OUTPUT_FILE | sed 's/# Nb Thread:\s*//g'`
+
+ 
+#sudo taskset -c 3 cyclictest -D10 -m -p90 -i1000 -h100000 -q -v >output
+#sudo cyclictest -D10 -m -p90 -i1000 -h100000 -q -v >output
+#sudo cyclictest -l100000000 -m -Sp90 -i200 -h400 -q >output 
+#sudo cyclictest -l1000 -n -m -Sp90 -i200 -h100000 -q -v -t 1>output 
+
+#(Please note that this will take 5 hours and 33 minutes.)
+
+#2. Get maximum latency
+
+# max=`grep "Max Latencies" output | tr " " "\n" | sort -n | tail -1 | sed s/^0*//`
+
+CPU_RESULTS="# CPU results summary:\n"
+
+max_list=`grep "Max Latencies:" $OUTPUT_FILE \
+          | sed 's/# Max Latencies:\s*//' \
+          | sed 's/\b0*/\ /g' \
+          | sed 's/^\s//' \
+          `
+avg_list=`grep "Avg Latencies:" $OUTPUT_FILE \
+          | sed 's/# Avg Latencies:\s*//' \
+          | sed 's/\b0*/\ /g' \
+          | sed 's/^\s//' \
+          `
+
+max_array=($max_list)
+avg_array=($avg_list)
+
+
+max=${max_array[0]}
+index=0
+maxi=0
+for val in $max_list
+do
+    CPU_RESULTS+=`echo "# - Core $index - max value=$val us (avg=${avg_array[$index]} us)\n"`
+    if [ "$val" -gt "$max"  ]
+    then
+      max=$val
+      maxi=$index
+    fi
+    let index=$index+1
+done
+
+CPU_RESULTS+=`echo "\
+#\n\
+# Max value:\n\
+#- Core $maxi: $max us"`
+
+if [ $executeFlag = 1 ]
+then
+  sed -i "s/@.*@/$CPU_RESULTS/" $OUTPUT_FILE
+else
+    if [ $verboseFlag = 1 ]
+  then
+  echo -e $CPU_RESULTS
+  fi
+fi
+
+if [ $displayFlag = 0 ];
+then
+  echo -e "\nfind result in '$OUTPUT_FILE' \n\n"
+
+ PrintHeader
+
+  echo -e "\
+To display :\n\
+            latencies -f $TEST_HASH\
+"
+  exit;
+else
+  PrintHeader
+  Display $TEST_HASH 
+fi
+
+
